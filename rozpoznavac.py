@@ -9,277 +9,384 @@ import shutil
 import tkinter as tk
 import tkinter.filedialog as fld
 from tkinter import ttk
-from keras.applications.vgg16 import VGG16
-from keras.applications.vgg16 import preprocess_input, decode_predictions
-from keras.preprocessing import image
-from keras import backend as K
+from tensorflow.keras.applications.vgg19 import VGG19
+from tensorflow.keras.applications.vgg19 import preprocess_input, decode_predictions
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras import backend as K
 import numpy as np
 import cv2
 from PIL import Image, ImageTk
+import tensorflow
+from typing import List, Dict
 
-class PredikovanyObjekt:
-    """Třída sloužící jako kontejner pro info spojené s třídou obrázku
-    """
-    def __init__(self, poradi, objekt, pravdepodobnost, index):
-        self.poradi = poradi
-        self.objekt = objekt
-        self.pravdepodobnost = pravdepodobnost
-        self.index = index
 
-def nacti_obrazek(jmeno_souboru):
-    """Zpracování obrázku do podoby, kterou dokáže síť zpracovat
-
-    Obrázek uživatelem vybraný se načte. Jeho rozměry se změní na 224x224 px.
-    Následně se objekt coby třída PIL.Image.Image převede na numpy.ndarray, tj.
-    objekt nabyde tvaru (224, 224, 3). Posléze
-    se převede na kvazibatch, tj. tenzor obrázku tvaru (224, 224, 3) se převede
-    na (1, 224, 224, 3). Nakonec proběhne zprocesování pro vgg16 (normalizace
-    na channely)
+class PredictedObject:
+    """Class used as container for information about figure content.
 
     Args:
-        jmeno_souboru (string): Jméno zdrojového obrázku i s celou cestou
+        order_number(int): Order number of probable classes from the most probable one
+        (it has 1).
+        class_name(str): Name of figure class (e.g. penquin).
+        probability(float): Probability that the object on figure belongs to the class.
+        class_index(int): Index of the class in a list of classes defined within ML model.
+    """
+
+    def __init__(
+        self, order_number: int, class_name: str, probability: float, class_index: int
+    ):
+        self.order_number = order_number
+        self.class_name = class_name
+        self.probability = probability
+        self.class_index = class_index
+
+
+def load_image(file_name: str) -> np.ndarray:
+    """Loads image and transforms it into the form in which neural net can work with it.
+
+    Image is loaded with both heigh and width 224 px. Then the image is converted
+    to numpy.ndarray with shape (224,224,3) and quasi-batch (1,224,224,3).
+    Finally processing (zero-centering of channels) takes place.
+
+    Args:
+        file_name (str): File name including dir, e.g. C:\\images\\penquin.jpg.
 
     Returns:
-        numpy.ndarray: Zprocesovaný obrázek ve formě tenzoru
+        numpy.ndarray: Processed image in a tensor form.
     """
+    original_image = image.load_img(file_name, target_size=(224, 224))
+    image_array = image.img_to_array(original_image)
+    image_batch = np.expand_dims(image_array, axis=0)
+    processed_image = preprocess_input(image_batch)
+    return processed_image
 
-    zdrojovy_obrazek = image.load_img(jmeno_souboru, target_size=(224, 224))
-    obrazek_na_array = image.img_to_array(zdrojovy_obrazek)
-    obrazek_batch = np.expand_dims(obrazek_na_array, axis=0)
-    zprocesovany_obrazek = preprocess_input(obrazek_batch)
-    return zprocesovany_obrazek
 
-def dej_obrazek_do_okna(*args):
-    """Uživatelem vybraný soubor je v programu zobrazen + se nastaví glob. prom. s jeho názvem
-    """
-    global global_jmeno_obrazku
-    global_jmeno_obrazku = fld.askopenfilename(initialdir=".",
-                                               title="Select picture for classification",
-                                               filetypes=[("jpeg files", "*.jpg")])
-    nacti_obrazek_do_labelframu(global_jmeno_obrazku, labelframe_puvodni_obrazek)
-    tlacitko_zjisti_tridu.config(state=tk.NORMAL)
-    tlacitko_vyrob_heatmapu.config(state=tk.DISABLED)
-    tlacitko_uloz_obrazek.config(state=tk.DISABLED)
-
-def ziskej_list_predikci(zdrojovy_obrazek, model):
-    """Určuje 10 nejpravděpodobnějších tříd obrázku
-
-    Na základě modelu funkce určí 10 nejpravděpodobnějších tříd, do kterých
-    obrázek spadá. Následně zprocesuje výsledek do podoby user-friendly třídy
-    predikovany_objekt (či přesněji do listu s objekty tohoto typu).
+def load_image_into_window(
+    labelframe_orig_figure: ttk.Labelframe,
+    button_find_class: ttk.Button,
+    button_create_heatmap: ttk.Button,
+    button_save_figure: ttk.Button,
+):
+    """Shows figure choosen by user in window interface + sets
+    global variable with figure name
 
     Args:
-        zdrojovy_obrazek (numpy.ndarray): Obrázek - tenzor, který se snažíme zařadit
-        model (keras.engine.training.Model) - použitý předtrénovaný model
+        labelframe_orig_figure(ttk.Labelframe): Container for original figure.
+        button_find_class(ttk.Button): Find classes button.
+        button_create_heatmap(ttk.Button): Create heatmap button.
+        button_save_figure(ttk.Button): Save button.
+    """
+    global global_figure_name
+    global_figure_name = fld.askopenfilename(
+        initialdir=".",
+        title="Select picture for classification",
+        filetypes=[("jpeg files", "*.jpg")],
+    )
+    load_image_to_labelframe(global_figure_name, labelframe_orig_figure)
+    button_find_class.config(state=tk.NORMAL)
+    button_create_heatmap.config(state=tk.DISABLED)
+    button_save_figure.config(state=tk.DISABLED)
+
+
+def _get_class_index(prediction: np.ndarray, order_number_minus_one: int) -> int:
+    """Returns model specified index of a class determined by order_number_minus_one.
+
+    Args:
+        prediction(np.ndarray): Probabilities for all classes.
+        order_number_minus_one(int): Order number specifying class.
+
+    Returns(int): Index of class specified by order_number_minus_one.
+    """
+    return np.where(
+        prediction
+        == np.partition(prediction.flatten(), -2)[-order_number_minus_one - 1]
+    )[1][0]
+
+
+def get_prediction_list(original_image: np.ndarray, model) -> List[PredictedObject]:
+    """Determines ten most probable image classes.
+
+    Determines 10 most probable classes of image. This info is afterwards processed
+    into user-friendly class PredictedObject (more precisely into list with objects
+    of this type).
+
+    Args:
+        original_image (np.ndarray): Figure - tensor, which we try to classify.
+        model (tf.keras.engine.functional.Functional): used ML model.
 
     Returns:
-        list: List objektů typu PredikovanyObjekt
+        List[PredictedObject]: List of PredictedObject objects.
     """
-    predikce = model.predict(zdrojovy_obrazek)
-    deset_nejvhodnejsich = decode_predictions(predikce, top=10)[0]
-    list_predpovedi = []
-    for poradi_minus_jedna, element in enumerate(deset_nejvhodnejsich):
-        poradi = poradi_minus_jedna + 1
-        jmeno_tridy = element[1]
-        pravdepodobnost = round(100*element[2], 2)
-        index = np.where(predikce == np.partition(predikce.flatten(), -2)[-poradi])[1][0]
-        novy_objekt = PredikovanyObjekt(poradi, jmeno_tridy, pravdepodobnost, index)
-        list_predpovedi.append(novy_objekt)
-    return list_predpovedi
+    prediction = model.predict(original_image)
+    ten_best_classes = decode_predictions(prediction, top=10)[0]
+    predictions_list = []
+    for order_number_minus_one, element in enumerate(ten_best_classes):
+        class_name = element[1]
+        probability = round(100 * element[2], 2)
+        class_index = _get_class_index(prediction, order_number_minus_one)
+        predictions_list.append(
+            PredictedObject(
+                order_number_minus_one + 1, class_name, probability, class_index
+            )
+        )
+    return predictions_list
 
-def urceni_trid(img_path, model):
-    """Fce naplní combobox a Text widget předpověďmi tříd obrázku
+
+def determine_classes(
+    file_name: str,
+    model,
+    textbox_classes_list: tk.Text,
+    combobox_chosen_class: ttk.Combobox,
+    button_save_figure: ttk.Button,
+    button_create_heatmap: ttk.Button,
+):
+    """Fills combobox and text widget with figure classes prediction.
 
     Args:
-        img_path (string): Název souboru - zdrojového obrázku i s cestou
-        model (keras.engine.training.Model): Použitý model
+        file_name (str): File name including dir, e.g. C:\\images\\penquin.jpg.
+        model (keras.engine.training.Model): Used ML model.
+        textbox_classes_list(tk.Text): List of predictions textbox.
+        combobox_chosen_class(ttk.Combobox): Choose class combobox.
+        button_save_figure(ttk.Button): Save image button.
+        button_create_heatmap(ttk.Button): Show heatmap button.
     """
-    obrazek = nacti_obrazek(img_path)
-    seznam = ziskej_list_predikci(obrazek, model)
-    tridy_pro_combobox = []
-    global global_mapovani_jmeno_na_index
-    text_seznam_trid.config(state=tk.NORMAL)
-    text_seznam_trid.delete(1.0, tk.END)
-    for trida_obrazku in seznam:
-        retezec = f"{trida_obrazku.poradi}. class {trida_obrazku.objekt} with probability {trida_obrazku.pravdepodobnost}%\n"
-        text_seznam_trid.insert(tk.END, retezec)
-        tridy_pro_combobox.append(trida_obrazku.objekt)
-        global_mapovani_jmeno_na_index[trida_obrazku.objekt] = trida_obrazku.index
-    text_seznam_trid.config(state=tk.DISABLED)
-    combobox_volba_tridy["values"] = tridy_pro_combobox
-    tlacitko_uloz_obrazek.config(state=tk.DISABLED)
+    figure = load_image(file_name)
+    prediction_list = get_prediction_list(figure, model)
+    classes_for_combobox = []
+    global global_mapping_name_to_index
+    textbox_classes_list.config(state=tk.NORMAL)
+    textbox_classes_list.delete(1.0, tk.END)
 
-    tlacitko_vyrob_heatmapu.config(state=tk.NORMAL)
+    for figure_class in prediction_list:
+        text_message = (
+            f"{figure_class.order_number}. "
+            f"class {figure_class.class_name} "
+            f"with probability {figure_class.probability}%\n"
+        )
+        textbox_classes_list.insert(tk.END, text_message)
+        classes_for_combobox.append(figure_class.class_name)
+        global_mapping_name_to_index[figure_class.class_name] = figure_class.class_index
 
-def vyrob_feature_mapu(model, jmeno_finalni_vrstvy, index, zprocesovany_obrazek):
-    """Vrací poslední konvoluční vrstvu přenásobenou její důležitostí pro třídu
+    textbox_classes_list.config(state=tk.DISABLED)
+    combobox_chosen_class["values"] = classes_for_combobox
+    button_save_figure.config(state=tk.DISABLED)
+    button_create_heatmap.config(state=tk.NORMAL)
+
+
+def create_feature_map(
+    model, final_layer_name: str, class_index: int, processed_image: np.ndarray
+) -> np.ndarray:
+    """Returns last convolution layer multiplied by its importance for a given class.
 
     Args:
-        model (keras.engine.training.Model): Použitý model
-        jmeno_finalni_vrstvy (string): Jméno poslední konvoluční vrstvy modelu
-        index (integer): Index třídy, pro kterou feature mapu vytváříme
-        zprocesovany_obrazek (numpy.ndarray): Zprocesovaný vstupní obrázek
+        model (keras.engine.training.Model): Used ML model.
+        final_layer_name (str): Name of final convolution layer in ML model.
+        class_index (int): Index of image class.
+        processed_image (numpy.ndarray): Processed (convertion to numpy array) loaded figure.
 
     Returns:
-        numpy.ndarray: Feature mapa zahrnující info o tom, jak je uričtý channel \
-        důležitý pro danou třídu; obvyklý tvar tensoru (14, 14, 512)
+        numpy.ndarray: Feature map with info about importance of channels for image class.
+        Usually the tensor shape is (14, 14, 512).
     """
-    trida_output = model.output[:, index]
-    last_conv_layer = model.get_layer(jmeno_finalni_vrstvy)
-    pocet_filtru = last_conv_layer.filters
-    #vraci gradienty trida_output pro vrstvu last_conv_layer
-    grads = K.gradients(trida_output, last_conv_layer.output)[0]
-    #spočte se průměr gradentů přes všechny osy krom té poslední channelové,
-    #tj. výsledek má 512 prvků (počet dán vrstvou modelu)
+    class_output = model.output[:, class_index]
+    last_conv_layer = model.get_layer(final_layer_name)
+    filter_count = last_conv_layer.filters
+    # gradients class_output for layer last_conv_layer
+    grads = K.gradients(class_output, last_conv_layer.output)[0]
+    # average of gradients over all axes except the channel one
+    # i.e. result consists of 512 elemets (number given by ML model layer)
     pooled_grads = K.mean(grads, axis=(0, 1, 2))
-    #fce zajišťuje přístup k výše definovaným veličinám
-    iterate = K.function([model.input],
-                         [pooled_grads, last_conv_layer.output[0]])
-    pooled_grads_value, conv_layer_output_value = iterate([zprocesovany_obrazek])
-    #conv_layer_output_value se pro každý channel
-    #přenásobuje mírou důležitosti channelu pro danou třídu
-    for i in range(pocet_filtru):
+    # function provides access to the above mentioned things
+    iterate = K.function([model.input], [pooled_grads, last_conv_layer.output[0]])
+    pooled_grads_value, conv_layer_output_value = iterate([processed_image])
+    # for each channel is conv_layer_output_value multiplied by channel importance
+    # for a given image class
+    for i in range(filter_count):
         conv_layer_output_value[:, :, i] *= pooled_grads_value[i]
     return conv_layer_output_value
 
-def vyrob_heatmapu(feature_mapa):
-    """Vyrobí heatmapu - nanormovaný průměr channelů feature mapy
+
+def create_heatmap(feature_map: np.ndarray) -> np.ndarray:
+    """Returns heatmap - normalized average of channels of feature map.
 
     Args:
-        feature_mapa (numpy.ndarray): Ovbvykle tensor floatů tvaru (14, 14, 512)
+        feature_map (numpy.ndarray): Usually tensor with shape (14, 14, 512) and float type.
 
     Returns
-        numpy.ndarray: Tensor floatů tvaru (14,14) s prvky z intervalu <0,1>
+        numpy.ndarray: Float tensor with shape (14,14) with values from interval <0,1>.
     """
-    heatmapa = np.mean(feature_mapa, axis=-1)
-    heatmapa = np.maximum(heatmapa, 0)
-    heatmapa /= np.max(heatmapa)
-    return heatmapa
+    heatmap = np.mean(feature_map, axis=-1)
+    heatmap = np.maximum(heatmap, 0)
+    heatmap = heatmap / np.max(heatmap)
+    return heatmap
 
-def spoj_heatmapu_a_original(jmeno_souboru, heatmapa):
-    """Načte původní obrázek a slije ho dohromady s heatmapou
 
-    Původní obrázek se znovu načítá z disku, tj. má původní tvar a nikoli (224, 224)
+def join_heatmap_and_fig(file_name: str, heatmap: np.ndarray) -> np.ndarray:
+    """Loads original image and puts over it the heatmap.
+
+    Original image is loaded from disk, i.e. it has original shape, not (224, 224).
 
     Args:
-        jmeno_souboru (string): Jméno souboru s obrázkem včetně cesty
-        heatmapa (numpy.ndarray): Heatmapa tvaru (14,14) zachycující pro určitou \
-        třídu nejdůležitější místa obrázku
+        file_name (str): File name including dir, e.g. C:\\images\\penquin.jpg.
+        heatmap (numpy.ndarray): Heatmap with shape (14,14) showing
+        the most important parth of an image for a given image class.
+
+    Returns:
+        numpy.ndarray: Original image with heatmap overlay.
     """
-    puvodni_obrazek = cv2.imread(jmeno_souboru)
-    heatmapa = cv2.resize(heatmapa,
-                          (puvodni_obrazek.shape[1], puvodni_obrazek.shape[0]))
-    heatmapa = np.uint8(255 * heatmapa)
-    heatmapa = cv2.applyColorMap(heatmapa, cv2.COLORMAP_JET)
-    slozeny_obrazek = heatmapa * 0.4 + puvodni_obrazek
-    return slozeny_obrazek
+    original_image = cv2.imread(file_name)
+    heatmap = cv2.resize(heatmap, (original_image.shape[1], original_image.shape[0]))
+    heatmap = np.uint8(255 * heatmap)
+    heatmap = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+    return heatmap * 0.4 + original_image
 
-def nacti_obrazek_do_labelframu(adresa_souboru, jmeno_labelframu):
-    """Funkce načítá obrázek z disku a umísťuje ho do zvoleného labelframu
 
-    Původně jsem pro obrázek s heatmapou v podobě numpy.arraye konvertoval
-    na Image pomocí Image.fromarray. To zahrnovalo konverzi na integer, která
-    hádám přetekla přes 255 a tak se v obrázcích objevovaly nepatřičné modré fleky.
-    Aktuální přístup není zrovna elegantní, ale funguje.
+def load_image_to_labelframe(file_name: str, labelframe_name: ttk.Labelframe):
+    """Loads image from disk and puts it into chosen labelframe.
+
+    Note: without double usage of converted_image loaded figure would not be shown.
+    Args:
+        file_name (str): File name including dir, e.g. C:\\images\\penquin.jpg.
+        labelframe_name (tkinter.ttk.Labelframe): Object in which the image will be located.
+    """
+    loaded_image = Image.open(file_name)
+    loaded_image = loaded_image.resize((IMAGE_WIDTH, IMAGE_HEIGHT), Image.ANTIALIAS)
+    converted_image = ImageTk.PhotoImage(loaded_image)
+    fig_in_labelframe = ttk.Label(labelframe_name, image=converted_image)
+    fig_in_labelframe.image = converted_image
+    fig_in_labelframe.grid(column=0, row=0)
+
+
+def create_final_figure(
+    original_file_name: str,
+    model,
+    final_layer_name: str,
+    mapping_name_to_index: Dict[str, int],
+    combobox_chosen_class: ttk.Combobox,
+    labelframe_fig_with_heatmap: ttk.Labelframe,
+    button_save_figure: ttk.Button,
+):
+    """Creates heatmap overlaid over original figure and saves it to temporary file
+    and window interface.
 
     Args:
-        adresa_souboru (string): Jméno souboru - obrázku i s cestou
-        jmeno_labelframu (tkinter.ttk.Labelframe): Objekt, do kterého se obr. vloží
+        original_file_name (str): File name including dir, e.g. C:\\images\\penquin.jpg.
+        model (keras.engine.training.Model): Used ML model.
+        final_layer_name (str): Name of final convolution layer in ML model.
+        mapping_name_to_index (Dict[str,int]): Mapping of class name to class index.
+        combobox_chosen_class(ttk.Combobox): Choose class combobox.
+        labelframe_fig_with_heatmap(ttk.Labelframe): Container for heatmap adjusted figure.
+        button_save_figure(ttk.Button): Save image button.
     """
-    nacteny_obrazek = Image.open(adresa_souboru)
-    nacteny_obrazek = nacteny_obrazek.resize((SIRKA_OBRAZKU, VYSKA_OBRAZKU),
-                                             Image.ANTIALIAS)
-    konvertovany_obrazek = ImageTk.PhotoImage(nacteny_obrazek)
-    obr_v_labelframu = ttk.Label(jmeno_labelframu, image=konvertovany_obrazek)
-    obr_v_labelframu.image = konvertovany_obrazek
-    obr_v_labelframu.grid(column=0, row=0)
+    chosen_class = combobox_chosen_class.get()
+    index = mapping_name_to_index[chosen_class]
 
-def vyrob_vysledny_obrazek(lokace_puvodniho_obrazku, model, jmeno_finalni_vrstvy,
-                           jmeno_obrazku, mapovani_jmeno_na_index):
-    """Fce vyrábí obr. heatmapy přeloženou přes originál a ukládá to do tempu a okna programu
+    processed_image = load_image(original_file_name)
 
-    Args:
-        lokace_puvodniho_obrazku (string): Jméno souboru - obrázku i s cestou
-        model (keras.engine.training.Model): Použitý model
-        jmeno_finalni_vrstvy (string): Jméno poslední konvoluční vrstvy modelu
-        jmeno_obrazku (string): Jméno souboru - obrázku i s cestou
-        mapovani_jmeno_na_index (dict): Namapování jména třídy na index
-    """
-    vybrana_trida = combobox_volba_tridy.get()
-    index = mapovani_jmeno_na_index[vybrana_trida]
+    feature_map = create_feature_map(model, final_layer_name, index, processed_image)
+    heatmap = create_heatmap(feature_map)
+    heatmap_overlay = join_heatmap_and_fig(original_file_name, heatmap)
+    cv2.imwrite("temp\\temporary_picture.jpg", heatmap_overlay)
+    load_image_to_labelframe("temp\\temporary_picture.jpg", labelframe_fig_with_heatmap)
+    button_save_figure.config(state=tk.NORMAL)
 
-    zprocesovany_obrazek = nacti_obrazek(lokace_puvodniho_obrazku)
 
-    feature_mapa = vyrob_feature_mapu(model,
-                                      jmeno_finalni_vrstvy,
-                                      index,
-                                      zprocesovany_obrazek)
-    heatmapa = vyrob_heatmapu(feature_mapa)
-    obr_a_heatmapa = spoj_heatmapu_a_original(jmeno_obrazku, heatmapa)
-    cv2.imwrite("temp\\temporary_picture.jpg", obr_a_heatmapa)
-    nacti_obrazek_do_labelframu("temp\\temporary_picture.jpg",
-                                labelframe_obr_s_heatmapou)
-    tlacitko_uloz_obrazek.config(state=tk.NORMAL)
+def save_final_image():
+    """Takes copy of image from temp dir and saves it under the name specified by the user."""
+    final_file_name = fld.asksaveasfilename(
+        initialdir=".", title="Select file", filetypes=[("jpeg files", "*.jpg")]
+    )
+    final_file_name = final_file_name + ".jpg"
+    shutil.copyfile("temp\\temporary_picture.jpg", final_file_name)
 
-def uloz_vysledny_obrazek():
-    """Fce bere kopii aktuálního obrázku z tempu a ukládá ji pod jménem určeným uživatelem
-    """
-    jmeno_ulozeneho_souboru = fld.asksaveasfilename(initialdir=".",
-                                                    title="Select file",
-                                                    filetypes=[("jpeg files", "*.jpg")])
-    jmeno_ulozeneho_souboru += ".jpg"
-    shutil.copyfile("temp\\temporary_picture.jpg", jmeno_ulozeneho_souboru)
 
-root = tk.Tk()
-root.title("Image recognition")
-mainframe = ttk.Frame(root, padding=(3, 3, 12, 12))
-mainframe.grid(column=0, row=0, sticky=(tk.N, tk.W, tk.E, tk.S))
-mainframe.columnconfigure(0, weight=1)
-mainframe.rowconfigure(0, weight=1)
+def create_window():
+    """Creates window interface for application."""
+    root = tk.Tk()
+    root.title("Image recognition")
+    mainframe = ttk.Frame(root, padding=(3, 3, 12, 12))
+    mainframe.grid(column=0, row=0, sticky=(tk.N, tk.W, tk.E, tk.S))
+    mainframe.columnconfigure(0, weight=1)
+    mainframe.rowconfigure(0, weight=1)
 
-VYSKA_OBRAZKU = 500
-SIRKA_OBRAZKU = 400
-global_jmeno_obrazku = ""
-global_mapovani_jmeno_na_index = {}
-pouzity_model = VGG16(weights='imagenet')
-jmeno_fin_conv_vrstvy = 'block5_conv3'
+    labelframe_orig_figure = ttk.Labelframe(
+        mainframe, text="Original image", width=IMAGE_WIDTH, height=IMAGE_HEIGHT
+    )
+    labelframe_orig_figure.grid_propagate(False)
+    labelframe_orig_figure.grid(column=0, row=0, padx=10, pady=5)
 
-labelframe_puvodni_obrazek = ttk.Labelframe(mainframe, text='Original image',
-                                            width=SIRKA_OBRAZKU, height=VYSKA_OBRAZKU)
-labelframe_puvodni_obrazek.grid_propagate(False)
-labelframe_puvodni_obrazek.grid(column=0, row=0, padx=10, pady=5)
-labelframe_obr_s_heatmapou = ttk.Labelframe(mainframe, text='Image with heatmap',
-                                            width=SIRKA_OBRAZKU, height=VYSKA_OBRAZKU)
-labelframe_obr_s_heatmapou.grid_propagate(False)
-labelframe_obr_s_heatmapou.grid(column=1, row=0, padx=10, pady=5)
+    labelframe_fig_with_heatmap = ttk.Labelframe(
+        mainframe, text="Image with heatmap", width=IMAGE_WIDTH, height=IMAGE_HEIGHT
+    )
+    labelframe_fig_with_heatmap.grid_propagate(False)
+    labelframe_fig_with_heatmap.grid(column=1, row=0, padx=10, pady=5)
 
-tlacitko_nahraj_obrazek = ttk.Button(mainframe, text="Load image", command=dej_obrazek_do_okna)
-tlacitko_nahraj_obrazek.grid(column=0, row=1)
-tlacitko_uloz_obrazek = ttk.Button(mainframe, text="Save image",
-                                   command=uloz_vysledny_obrazek, state=tk.DISABLED)
-tlacitko_uloz_obrazek.grid(column=1, row=1)
+    button_load_image = ttk.Button(
+        mainframe,
+        text="Load image",
+        command=lambda: load_image_into_window(
+            labelframe_orig_figure,
+            button_find_class,
+            button_create_heatmap,
+            button_save_figure,
+        ),
+    )
+    button_load_image.grid(column=0, row=1)
 
-tlacitko_zjisti_tridu = ttk.Button(mainframe, text="Determine the most probable class",
-                                   command=lambda: urceni_trid(global_jmeno_obrazku,
-                                                               pouzity_model),
-                                   state=tk.DISABLED)
-tlacitko_zjisti_tridu.grid(column=0, row=2, columnspan=2)
+    button_save_figure = ttk.Button(
+        mainframe, text="Save image", command=save_final_image, state=tk.DISABLED
+    )
+    button_save_figure.grid(column=1, row=1)
 
-text_seznam_trid = tk.Text(mainframe, height=10, width=50, state=tk.DISABLED)
-text_seznam_trid.grid(column=0, row=3, rowspan=3)
+    button_find_class = ttk.Button(
+        mainframe,
+        text="Determine the most probable class",
+        command=lambda: determine_classes(
+            global_figure_name,
+            USED_MODEL,
+            textbox_classes_list,
+            combobox_chosen_class,
+            button_save_figure,
+            button_create_heatmap,
+        ),
+        state=tk.DISABLED,
+    )
+    button_find_class.grid(column=0, row=2, columnspan=2)
 
-label_volba_tridy = ttk.Label(mainframe, text="Choose class")
-label_volba_tridy.grid(column=1, row=3)
-combobox_volba_tridy = ttk.Combobox(mainframe, state="readonly")
-combobox_volba_tridy.grid(column=1, row=4)
-tlacitko_vyrob_heatmapu = ttk.Button(mainframe,
-                                     text="Show heatmap for given class",
-                                     command=lambda: vyrob_vysledny_obrazek(global_jmeno_obrazku,
-                                                                            pouzity_model,
-                                                                            jmeno_fin_conv_vrstvy,
-                                                                            global_jmeno_obrazku,
-                                                                            global_mapovani_jmeno_na_index),
-                                     state=tk.DISABLED)
-tlacitko_vyrob_heatmapu.grid(column=1, row=5)
+    textbox_classes_list = tk.Text(mainframe, height=10, width=50, state=tk.DISABLED)
+    textbox_classes_list.grid(column=0, row=3, rowspan=3)
 
-root.mainloop()
+    label_class_choice = ttk.Label(mainframe, text="Choose class")
+    label_class_choice.grid(column=1, row=3)
+
+    combobox_chosen_class = ttk.Combobox(mainframe, state="readonly")
+    combobox_chosen_class.grid(column=1, row=4)
+
+    button_create_heatmap = ttk.Button(
+        mainframe,
+        text="Show heatmap for given class",
+        command=lambda: create_final_figure(
+            global_figure_name,
+            USED_MODEL,
+            FINAL_CONV_LAYER_NAME,
+            global_mapping_name_to_index,
+            combobox_chosen_class,
+            labelframe_fig_with_heatmap,
+            button_save_figure,
+        ),
+        state=tk.DISABLED,
+    )
+    button_create_heatmap.grid(column=1, row=5)
+
+    root.mainloop()
+
+
+tensorflow.compat.v1.disable_eager_execution()
+IMAGE_HEIGHT = 500
+IMAGE_WIDTH = 400
+USED_MODEL = VGG19(weights="imagenet")
+FINAL_CONV_LAYER_NAME = "block5_conv4"
+global_figure_name = ""
+global_mapping_name_to_index = {}
+
+if __name__ == "__main__":
+    create_window()
