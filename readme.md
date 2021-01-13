@@ -4,16 +4,7 @@ Convolutional neural network (CNN) are (under certain coditions) able to determi
 ![Reasonable_guess](examples/reasonable_guess.jpg)  
 ![Silly_guess](examples/silly_guess.jpg)  
 
-# Technical details
-Used Python version: 3.7.3  
-External packages versions:  
-> keras 2.2.4  
-> keras-applications 1.0.8  
-> keras-preprocessing 1.1.0  
-> numpy 1.16.2  
-> opencv-contrib-python 4.1.0.25  
-> pillow 5.4.1  
-
-# History
-14.7.2019 First version  
-8.7.2019 Small changes in readme
+# Intallation  
+Create virtual environment by "python -m venv environment".  
+Activate the virtual environment by typing "environment/Scripts/activate".  
+Install packages by "pip install -r requirements.txt".
